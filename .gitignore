@@ -1,0 +1,17 @@
+# Model dosyaları (büyük boyutlu)
+*.pkl
+
+# Ham veri dosyaları
+*.txt
+*.csv
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Ortam değişkenleri
+.env
+
+# IDE
+.vscode/

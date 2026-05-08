@@ -1,0 +1,366 @@
+import streamlit as st
+import requests
+import pandas as pd
+import time
+import json
+import os
+
+st.set_page_config(page_title="AI-Based IDS", page_icon="🛡️", layout="wide")
+
+st.title("🛡️ AI-Based Intrusion Detection System")
+st.markdown("**NSL-KDD Dataset | XGBoost Model | Flask API**")
+
+# ===== Sidebar =====
+st.sidebar.header("⚙️ Ayarlar")
+api_url = st.sidebar.text_input("API URL", value="http://127.0.0.1:5000")
+
+# ===== API Durumu =====
+st.subheader("📡 API Durumu")
+try:
+    health = requests.get(f"{api_url}/health").json()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Durum", "✅ Çalışıyor")
+    c2.metric("Model", health["model"])
+    c3.metric("Feature Sayısı", health["features"])
+    i1, i2 = st.columns(2)
+    smtp_ok = health.get("smtp_configured", False)
+    mc_ok   = health.get("multiclass_available", False)
+    i1.info(f"📧 Email: {'✅ Aktif' if smtp_ok else '❌ Pasif — env değişkenlerini ayarlayın'}")
+    i2.info(f"🎯 Multiclass: {'✅ Yüklü' if mc_ok else '❌ train_multiclass.py çalıştırın'}")
+except Exception:
+    st.error("❌ API'ye bağlanılamıyor! Önce app.py'yi çalıştır.")
+    st.stop()
+
+st.divider()
+
+# ===== Veri & encoder yükle =====
+@st.cache_data
+def load_data():
+    df = pd.read_csv("KDDTest_encoded.csv")
+    df = df.replace([float("inf"), float("-inf")], 0).fillna(0)
+    return df
+
+df = load_data()
+
+with open("encoder_mapping.json") as _f:
+    _enc = json.load(_f)
+
+_proto_rev   = {v: k for k, v in _enc["protocol_type"].items()}
+_service_rev = {v: k for k, v in _enc["service"].items()}
+
+# Session state — simülasyon
+for _k, _v in [("sim_running", False), ("sim_index", 0), ("sim_results", [])]:
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
+# ===== SEKMELER =====
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🔍 Tespit",
+    "🔴 Canlı Simülasyon",
+    "📊 Model Performans",
+    "🔄 Feedback & Retraining",
+])
+
+# ─────────────────────────────────────────
+# TAB 1 — Tespit
+# ─────────────────────────────────────────
+with tab1:
+    st.subheader("🔍 Otomatik Trafik Testi")
+
+    sample_index = st.slider("Test örneği seç", 0, 100, 0)
+    sample_row   = df.iloc[sample_index]
+    true_label   = int(sample_row["label"] != 0)
+    sample       = sample_row.drop("label").to_dict()
+
+    if st.button("🚀 Tahmin Yap", type="primary"):
+        response = requests.post(f"{api_url}/predict", json=sample)
+        result   = response.json()
+        prediction = result["prediction"]
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Gerçek Label",      "🔴 ATTACK" if true_label == 1 else "🟢 BENIGN")
+        col2.metric("Model Tahmini",     "🔴 ATTACK" if prediction == "ATTACK" else "🟢 BENIGN")
+        col3.metric("Saldırı Kategorisi", result.get("attack_category", "-"))
+
+        st.progress(result["attack_probability"],
+                    text=f"Attack Olasılığı: %{result['attack_probability']*100:.2f}")
+        st.progress(result["benign_probability"],
+                    text=f"Benign Olasılığı: %{result['benign_probability']*100:.2f}")
+
+        if true_label == (1 if prediction == "ATTACK" else 0):
+            st.success("✅ Model doğru tahmin etti!")
+        else:
+            st.error("❌ Model yanlış tahmin etti!")
+
+        fb = sample.copy()
+        fb["true_label"]      = true_label
+        fb["predicted_label"] = 1 if prediction == "ATTACK" else 0
+        requests.post(f"{api_url}/feedback", json=fb)
+        st.info("💾 Feedback MongoDB'ye kaydedildi!")
+
+    st.divider()
+    st.subheader("📊 Toplu Test (İlk 50 Örnek)")
+
+    if st.button("📈 Toplu Analiz Yap"):
+        results  = []
+        progress = st.progress(0)
+        for i in range(50):
+            row  = df.iloc[i]
+            true = int(row["label"] != 0)
+            s    = row.drop("label").to_dict()
+            r    = requests.post(f"{api_url}/predict", json=s).json()
+            pred = 1 if r["prediction"] == "ATTACK" else 0
+            results.append({
+                "Index":           i,
+                "Gerçek":          "ATTACK" if true else "BENIGN",
+                "Tahmin":          r["prediction"],
+                "Kategori":        r.get("attack_category", "-"),
+                "Doğru mu":        "✅" if true == pred else "❌",
+                "Attack Olasılığı": f"%{r['attack_probability']*100:.1f}",
+            })
+            progress.progress((i + 1) / 50)
+
+        results_df = pd.DataFrame(results)
+        correct    = sum(1 for r in results if r["Doğru mu"] == "✅")
+        a, b, c    = st.columns(3)
+        a.metric("Doğruluk",      f"%{correct/50*100:.1f}")
+        b.metric("Doğru Tahmin",  f"{correct}/50")
+        c.metric("Yanlış Tahmin", f"{50-correct}/50")
+        st.dataframe(results_df, use_container_width=True)
+
+# ─────────────────────────────────────────
+# TAB 2 — Canlı Simülasyon
+# ─────────────────────────────────────────
+with tab2:
+    st.subheader("🔴 Canlı Trafik Simülasyonu")
+
+    b1, b2, b3 = st.columns([1, 1, 2])
+    with b1:
+        if st.button("▶️ Başlat", disabled=st.session_state.sim_running):
+            st.session_state.sim_running = True
+            st.session_state.sim_index   = 0
+            st.session_state.sim_results = []
+            st.rerun()
+    with b2:
+        if st.button("⏹ Durdur", disabled=not st.session_state.sim_running):
+            st.session_state.sim_running = False
+    with b3:
+        sim_speed = st.slider("Hız (sn/örnek)", 0.2, 3.0, 0.8, 0.1,
+                              disabled=st.session_state.sim_running)
+
+    if st.session_state.sim_results:
+        _res = st.session_state.sim_results
+        _tot = len(_res)
+        _atk = sum(1 for r in _res if r["tahmin"] == "ATTACK")
+        _acc = sum(1 for r in _res if r["dogru"]) / _tot * 100
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("İşlenen",  _tot)
+        m2.metric("Saldırı",  _atk)
+        m3.metric("Doğruluk", f"%{_acc:.1f}")
+        m4.metric("Son",      _res[-1]["tahmin"])
+
+        _attacks = [r for r in _res if r["tahmin"] == "ATTACK"]
+        if _attacks:
+            _la = _attacks[-1]
+            st.error(
+                f"🚨 Son Saldırı → kategori: {_la['kategori']} | "
+                f"servis: {_la['servis']} | src: {_la['src_bytes']} B | "
+                f"%{_la['olasilik']:.1f}"
+            )
+
+        def _renk(row):
+            return (["background-color:#ffcccc"] * len(row)
+                    if row["tahmin"] == "ATTACK" else [""] * len(row))
+
+        _tablo = pd.DataFrame(_res[-15:][::-1])[[
+            "#", "protokol", "servis", "src_bytes", "dst_bytes",
+            "gercek", "tahmin", "kategori", "olasilik", "durum"
+        ]]
+        st.dataframe(_tablo.style.apply(_renk, axis=1), use_container_width=True)
+
+    if st.session_state.sim_running:
+        _i = st.session_state.sim_index
+        if _i < len(df):
+            _row    = df.iloc[_i]
+            _true   = int(_row["label"] != 0)
+            _sample = _row.drop("label").to_dict()
+            try:
+                _r    = requests.post(f"{api_url}/predict", json=_sample, timeout=5).json()
+                _pred = _r["prediction"]
+                _prob = _r["attack_probability"] * 100
+                st.session_state.sim_results.append({
+                    "#":         _i,
+                    "protokol":  _proto_rev.get(int(_sample.get("protocol_type", 0)), "?"),
+                    "servis":    _service_rev.get(int(_sample.get("service", 0)), "?"),
+                    "src_bytes": int(_sample.get("src_bytes", 0)),
+                    "dst_bytes": int(_sample.get("dst_bytes", 0)),
+                    "gercek":    "ATTACK" if _true else "BENIGN",
+                    "tahmin":    _pred,
+                    "kategori":  _r.get("attack_category", "-"),
+                    "olasilik":  _prob,
+                    "durum":     "✅" if (_true == 1) == (_pred == "ATTACK") else "❌",
+                    "dogru":     (_true == 1) == (_pred == "ATTACK"),
+                })
+            except Exception:
+                pass
+            st.session_state.sim_index += 1
+            time.sleep(sim_speed)
+            st.rerun()
+        else:
+            st.session_state.sim_running = False
+            st.success(f"✅ Simülasyon tamamlandı! {len(df)} örnek işlendi.")
+            st.rerun()
+
+# ─────────────────────────────────────────
+# TAB 3 — Model Performans
+# ─────────────────────────────────────────
+with tab3:
+    st.subheader("📈 Model Performans Grafikleri")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**Overfitting Kontrolü**")
+        st.image("overfitting_control.png", use_container_width=True)
+    with col2:
+        st.markdown("**Random Forest vs XGBoost**")
+        st.image("rf_vs_xgboost.png", use_container_width=True)
+
+    col3, col4 = st.columns(2)
+    with col3:
+        st.markdown("**Confusion Matrix (Binary)**")
+        st.image("confusion_matrix.png", use_container_width=True)
+    with col4:
+        st.markdown("**Feature Importance**")
+        st.image("feature_importance.png", use_container_width=True)
+
+    if os.path.exists("confusion_matrix_multiclass.png"):
+        st.divider()
+        _, cm_col, _ = st.columns([1, 2, 1])
+        with cm_col:
+            st.markdown("**Confusion Matrix — Multiclass (DoS / Probe / R2L / U2R)**")
+            st.image("confusion_matrix_multiclass.png", use_container_width=True)
+
+# ─────────────────────────────────────────
+# TAB 4 — Feedback & Retraining
+# ─────────────────────────────────────────
+with tab4:
+    # Feedback Kayıtları
+    st.subheader("📋 Feedback Kayıtları (MongoDB)")
+    fb_limit = st.slider("Gösterilecek kayıt sayısı", 5, 100, 20)
+    if st.button("🔄 Feedback Yükle"):
+        try:
+            fb_resp = requests.get(f"{api_url}/feedback/list?limit={fb_limit}")
+            fb_data = fb_resp.json()
+            st.metric("Toplam Kayıt", fb_data["count"])
+            if fb_data["samples"]:
+                fb_df     = pd.DataFrame(fb_data["samples"])
+                show_cols = ["timestamp", "true_label", "predicted_label",
+                             "src_bytes", "dst_bytes", "protocol_type", "service"]
+                show_cols = [c for c in show_cols if c in fb_df.columns]
+                st.dataframe(fb_df[show_cols], use_container_width=True)
+            else:
+                st.info("Henüz feedback kaydı yok.")
+        except Exception as e:
+            st.error(f"Feedback yüklenemedi: {e}")
+
+    st.divider()
+
+    # Manuel Feedback
+    st.subheader("✍️ Manuel Feedback Girişi")
+    st.caption("Modelin kaçırdığı bir saldırıyı elle kaydet.")
+
+    with st.form("manuel_feedback_form"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            protocol_str = st.selectbox("Protocol Type", list(_enc["protocol_type"].keys()))
+            src_bytes    = st.number_input("src_bytes", min_value=0, value=0)
+            duration     = st.number_input("duration",  min_value=0, value=0)
+        with col2:
+            service_str  = st.selectbox("Service", list(_enc["service"].keys()))
+            dst_bytes    = st.number_input("dst_bytes", min_value=0, value=0)
+            count        = st.number_input("count",     min_value=0, value=0)
+        with col3:
+            flag_str     = st.selectbox("Flag", list(_enc["flag"].keys()))
+            true_lbl     = st.selectbox("Gerçek Etiket", [1, 0],
+                                        format_func=lambda x: "🔴 ATTACK (1)" if x == 1 else "🟢 BENIGN (0)")
+            logged_in    = st.selectbox("logged_in", [0, 1])
+        submitted = st.form_submit_button("💾 Feedback Kaydet", type="primary")
+
+    if submitted:
+        with open("feature_columns.json") as _ff:
+            _feat_cols = json.load(_ff)
+        fb_sample = {col: 0 for col in _feat_cols}
+        fb_sample.update({
+            "protocol_type":  _enc["protocol_type"][protocol_str],
+            "service":        _enc["service"][service_str],
+            "flag":           _enc["flag"][flag_str],
+            "src_bytes":      src_bytes,
+            "dst_bytes":      dst_bytes,
+            "duration":       duration,
+            "count":          count,
+            "logged_in":      logged_in,
+            "true_label":     true_lbl,
+            "predicted_label": 0,
+        })
+        try:
+            resp = requests.post(f"{api_url}/feedback", json=fb_sample)
+            if resp.status_code == 200:
+                st.success("✅ Feedback MongoDB'ye kaydedildi!")
+            else:
+                st.error(f"Hata: {resp.json().get('error')}")
+        except Exception as e:
+            st.error(f"Bağlantı hatası: {e}")
+
+    st.divider()
+
+    # Retraining
+    st.subheader("🔄 Feedback Tabanlı Retraining")
+
+    if st.button("🚀 Retraining Başlat", type="primary"):
+        with st.spinner("Model yeniden eğitiliyor, lütfen bekleyin..."):
+            try:
+                r    = requests.post(f"{api_url}/retrain", timeout=300)
+                resp = r.json()
+                if "results" in resp:
+                    rt = resp["results"]
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Kullanılan Feedback", f"{rt.get('feedback_count', 0)} örnek")
+                    col2.metric("Önceki F1",  f"%{rt['before_f1']*100:.2f}")
+                    col3.metric("Yeni F1",    f"%{rt['after_f1']*100:.2f}",
+                                delta=f"%{(rt['after_f1']-rt['before_f1'])*100:.2f}")
+                    col1, col2 = st.columns(2)
+                    col1.metric("Önceki False Negative", rt['before_fn'])
+                    col2.metric("Yeni False Negative",   rt['after_fn'],
+                                delta=rt['after_fn'] - rt['before_fn'], delta_color="inverse")
+                    st.success(
+                        f"✅ Retraining tamamlandı! "
+                        f"FN: {rt['before_fn']} → {rt['after_fn']}, "
+                        f"F1: %{rt['before_f1']*100:.2f} → %{rt['after_f1']*100:.2f}"
+                    )
+                else:
+                    st.error(f"Hata: {resp.get('error', 'Bilinmeyen hata')}")
+            except Exception as e:
+                st.error(f"Bağlantı hatası: {e}")
+
+    st.divider()
+
+    # Son Retraining Sonuçları
+    st.subheader("📊 Son Retraining Sonuçları")
+    try:
+        with open("retraining_results.json") as f:
+            rt = json.load(f)
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Feedback Sayısı", rt.get("feedback_count", "-"))
+        col2.metric("Önceki F1",       f"%{rt['before_f1']*100:.2f}")
+        col3.metric("Sonraki F1",      f"%{rt['after_f1']*100:.2f}")
+        col1, col2 = st.columns(2)
+        col1.metric("Önceki False Negative", rt['before_fn'])
+        col2.metric("Sonraki False Negative", rt['after_fn'])
+        st.success(
+            f"✅ Feedback mekanizması sayesinde kaçırılan saldırı sayısı "
+            f"{rt['before_fn']}'den {rt['after_fn']}'e düştü, "
+            f"F1 skoru %{rt['after_f1']*100:.2f}'e yükseldi!"
+        )
+    except FileNotFoundError:
+        st.info("Henüz retraining yapılmadı.")
