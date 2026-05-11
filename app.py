@@ -35,6 +35,7 @@ ALERT_THRESHOLD = float(os.environ.get("IDS_ALERT_THRESHOLD", "0.9"))
 mongo_client = MongoClient(MONGO_URI)
 mongo_db = mongo_client[MONGO_DB_NAME]
 mongo_collection = mongo_db[MONGO_COLLECTION_NAME]
+alerts_collection = mongo_db["detected_attacks"]
 
 # ===== Load model =====
 model = joblib.load(MODEL_PATH)
@@ -122,6 +123,10 @@ def predict():
             cat_pred = int(multiclass_model.predict(sample_scaled)[0])
             attack_category = category_names.get(str(cat_pred), "Unknown")
 
+        # Binary ATTACK ama multiclass Normal diyorsa "Diger" göster
+        if pred == 1 and attack_category == "Normal":
+            attack_category = "Diger"
+
         result = {
             "prediction": "ATTACK" if pred == 1 else "BENIGN",
             "predicted_label": pred,
@@ -160,6 +165,34 @@ def feedback():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/alert", methods=["POST"])
+def save_alert():
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No JSON body"}), 400
+        data["timestamp"] = datetime.now(timezone.utc).isoformat()
+        alerts_collection.insert_one(data)
+        return jsonify({"message": "Alert saved"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/alert/list", methods=["GET"])
+def alert_list():
+    try:
+        limit = int(request.args.get("limit", 100))
+        total = alerts_collection.count_documents({})
+        docs = list(
+            alerts_collection.find({}, {"_id": 0})
+            .sort("timestamp", -1)
+            .limit(limit)
+        )
+        return jsonify({"count": total, "alerts": docs}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route("/feedback/list", methods=["GET"])
 def feedback_list():

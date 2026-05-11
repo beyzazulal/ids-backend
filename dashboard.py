@@ -54,11 +54,12 @@ for _k, _v in [("sim_running", False), ("sim_index", 0), ("sim_results", [])]:
         st.session_state[_k] = _v
 
 # ===== SEKMELER =====
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🔍 Tespit",
     "🔴 Canlı Simülasyon",
     "📊 Model Performans",
     "🔄 Feedback & Retraining",
+    "🌐 Gerçek Trafik",
 ])
 
 # ─────────────────────────────────────────
@@ -364,3 +365,89 @@ with tab4:
         )
     except FileNotFoundError:
         st.info("Henüz retraining yapılmadı.")
+
+# ─────────────────────────────────────────
+# TAB 5 — Gerçek Trafik
+# ─────────────────────────────────────────
+with tab5:
+    st.subheader("🌐 Gerçek Trafik Analizi")
+    st.caption("capture.py Administrator olarak çalışırken canlı sonuçlar burada görünür.")
+
+    col_a, col_b = st.columns([1, 1])
+    with col_a:
+        if st.button("🔄 Yenile", key="refresh_live"):
+            st.rerun()
+    with col_b:
+        auto_refresh = st.toggle("Otomatik Yenile (3 sn)", value=False)
+
+    # MongoDB'den tespit edilen saldırılar
+    try:
+        alert_resp = requests.get(f"{api_url}/alert/list?limit=10000")
+        alert_data = alert_resp.json()
+        if alert_data["count"] > 0:
+            st.markdown("#### 🗄️ MongoDB — Tespit Edilen Saldırılar")
+            a1, a2 = st.columns(2)
+            a1.metric("Toplam Saldırı (Kalıcı)", alert_data["count"])
+            a2.metric("Son Kategori",
+                      alert_data["alerts"][0].get("category", "-"))
+            df_alerts = pd.DataFrame(alert_data["alerts"])[[
+                "timestamp", "src", "dst", "protocol",
+                "service", "category", "probability"
+            ]]
+            st.dataframe(df_alerts, use_container_width=True)
+            st.divider()
+    except Exception:
+        pass
+
+    if os.path.exists("live_results.json"):
+        try:
+            with open("live_results.json") as f:
+                content = f.read().strip()
+            live = json.loads(content) if content else []
+
+            if live:
+                total    = len(live)
+                attacks  = sum(1 for r in live if r["prediction"] == "ATTACK")
+                benigns  = total - attacks
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Toplam Paket", total)
+                m2.metric("🔴 Saldırı",   attacks)
+                m3.metric("🟢 Normal",    benigns)
+
+                last_attacks = [r for r in live if r["prediction"] == "ATTACK"]
+                if last_attacks:
+                    la = last_attacks[0]
+                    st.error(
+                        f"🚨 Son Saldırı → {la['src']} → {la['dst']} | "
+                        f"{la['protocol'].upper()} | {la['service']} | "
+                        f"{la['category']} | %{la['probability']:.1f}"
+                    )
+
+                def _renk_live(row):
+                    return (["background-color:#ffcccc"] * len(row)
+                            if row["prediction"] == "ATTACK" else [""] * len(row))
+
+                df_live = pd.DataFrame(live)
+                # En yeni paket en üstte — timestamp'e göre sırala
+                df_live = df_live.sort_values("timestamp", ascending=False).head(50)
+                df_live = df_live[[
+                    "timestamp", "src", "dst", "protocol",
+                    "service", "flag", "src_bytes",
+                    "prediction", "category", "probability"
+                ]].reset_index(drop=True)
+                st.dataframe(
+                    df_live.style.apply(_renk_live, axis=1),
+                    use_container_width=True
+                )
+            else:
+                st.info("capture.py henüz paket yakalamadı.")
+        except Exception as e:
+            st.error(f"Dosya okunamadı: {e}")
+    else:
+        st.warning("live_results.json bulunamadı — capture.py'yi başlatın.")
+        st.code("python capture.py", language="bash")
+
+    if auto_refresh:
+        time.sleep(3)
+        st.rerun()
