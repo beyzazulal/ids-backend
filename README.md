@@ -127,6 +127,8 @@ KDDTrain + Feedback verisiyle model yeniden eğitilir
        ↓
 Yeni model F1 skoru karşılaştırılır ve kaydedilir
 ```
+<img width="1920" height="1080" alt="Ekran Görüntüsü (6485)" src="https://github.com/user-attachments/assets/9e9dd17e-759d-4868-8221-28d2b596d178" />
+
 
 ## Ortam Değişkenleri
 
