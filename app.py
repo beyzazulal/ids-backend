@@ -36,6 +36,7 @@ ALERT_THRESHOLD = float(os.environ.get("IDS_ALERT_THRESHOLD", "0.9"))
 mongo_client = MongoClient(MONGO_URI)
 mongo_db = mongo_client[MONGO_DB_NAME]
 mongo_collection = mongo_db[MONGO_COLLECTION_NAME]
+alerts_collection = mongo_db["detected_attacks"]
 
 # ===== Load model =====
 model = joblib.load(MODEL_PATH)
@@ -122,6 +123,10 @@ def predict():
         if multiclass_model is not None:
             cat_pred = int(multiclass_model.predict(sample_scaled)[0])
             attack_category = category_names.get(str(cat_pred), "Unknown")
+
+        # Binary ATTACK ama multiclass Normal diyorsa "Diger" göster
+        if pred == 1 and attack_category == "Normal":
+            attack_category = "Diger"
 
         result = {
             "prediction": "ATTACK" if pred == 1 else "BENIGN",
