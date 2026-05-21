@@ -139,10 +139,9 @@ Yeni model F1 skoru karşılaştırılır ve kaydedilir
 | `IDS_SMTP_TO` | — | Alarm gönderilecek adres |
 | `IDS_ALERT_THRESHOLD` | `0.9` | Alarm eşiği (%90) |
 
-<img width="995" height="857" alt="image" src="https://github.com/user-attachments/assets/01cee6cf-c1dd-4bc2-a416-97d0478b0c51" />
+<img width="1910" height="2776" alt="screencapture-localhost-8501-2026-05-20-21_12_31" src="https://github.com/user-attachments/assets/99a6576d-acdc-4fd8-ab46-b6a3631a8239" />
 
 <img width="1910" height="2316" alt="screencapture-localhost-8501-2026-05-20-21_10_37" src="https://github.com/user-attachments/assets/54f0f40e-e974-4792-87fd-5614e9277677" />
 
-<img width="995" height="857" alt="image" src="https://github.com/user-attachments/assets/3b3fe161-89aa-4d5b-949d-0c80caf42ac2" />
 
 
