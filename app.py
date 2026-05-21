@@ -24,6 +24,7 @@ COLUMNS_PATH = os.environ.get("IDS_COLUMNS_PATH", "feature_columns.json")
 MONGO_URI = os.environ.get("IDS_MONGO_URI", "mongodb://localhost:27017/")
 MONGO_DB_NAME = "ids_project"
 MONGO_COLLECTION_NAME = "feedback_samples"
+FEEDBACK_BACKUP_FILE = os.environ.get("IDS_FEEDBACK_BACKUP", "feedback_backup.jsonl")
 
 # SMTP — set these env vars to enable email alerts
 SMTP_EMAIL     = os.environ.get("IDS_SMTP_EMAIL", "")
@@ -152,6 +153,11 @@ def feedback():
         data["timestamp"] = datetime.now(timezone.utc).isoformat()
         mongo_collection.insert_one(data)
 
+        # JSONL yedek — MongoDB silinirse buradan geri yüklenebilir
+        backup = {k: v for k, v in data.items() if k != "_id"}
+        with open(FEEDBACK_BACKUP_FILE, "a", encoding="utf-8") as bf:
+            bf.write(json.dumps(backup) + "\n")
+
         return jsonify({
             "message": "Feedback saved to MongoDB",
             "mongo_db": MONGO_DB_NAME,
@@ -161,16 +167,40 @@ def feedback():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
+@app.route("/feedback/restore-backup", methods=["POST"])
+def restore_feedback_backup():
+    """feedback_backup.jsonl dosyasından MongoDB'ye geri yükle."""
+    try:
+        if not os.path.exists(FEEDBACK_BACKUP_FILE):
+            return jsonify({"error": "Yedek dosyası bulunamadı"}), 404
+        existing_ts = {d["timestamp"] for d in mongo_collection.find({}, {"timestamp": 1, "_id": 0})}
+        inserted = 0
+        with open(FEEDBACK_BACKUP_FILE, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                doc = json.loads(line)
+                if doc.get("timestamp") not in existing_ts:
+                    mongo_collection.insert_one(doc)
+                    existing_ts.add(doc["timestamp"])
+                    inserted += 1
+        return jsonify({"message": f"{inserted} kayıt geri yüklendi", "total": mongo_collection.count_documents({})}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/feedback/list", methods=["GET"])
 def feedback_list():
     try:
         limit = int(request.args.get("limit", 50))
+        total = mongo_collection.count_documents({})
         docs = list(
             mongo_collection.find({}, {"_id": 0})
             .sort("timestamp", -1)
             .limit(limit)
         )
-        return jsonify({"count": len(docs), "samples": docs}), 200
+        return jsonify({"total_count": total, "count": len(docs), "samples": docs}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

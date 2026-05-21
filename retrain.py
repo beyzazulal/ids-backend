@@ -98,14 +98,14 @@ def retrain():
     after_f1  = float(f1_score(y_val, new_preds))
 
     # --- persist ---
-    joblib.dump(new_model, MODEL_PATH)
+    joblib.dump(new_model, MODEL_PATH) 
 
     results = {
-        "before_fn":      before_fn,
-        "before_f1":      before_f1,
-        "after_fn":       after_fn,
-        "after_f1":       after_f1,
-        "feedback_count": feedback_count,
+        "before_fn":      before_fn, # Eski model kaç saldırı kaçırdı
+        "before_f1":      before_f1, # Eski modelin F1 skoru
+        "after_fn":       after_fn,  # Yeni model kaç saldırı kaçırdı
+        "after_f1":       after_f1,  # Yeni modelin F1 skoru
+        "feedback_count": feedback_count, # Kaç feedback kullanıldı
     }
     with open("retraining_results.json", "w") as f:
         json.dump(results, f)

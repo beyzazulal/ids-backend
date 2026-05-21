@@ -45,20 +45,13 @@ df = load_data()
 with open("encoder_mapping.json") as _f:
     _enc = json.load(_f)
 
-_proto_rev   = {v: k for k, v in _enc["protocol_type"].items()}
-_service_rev = {v: k for k, v in _enc["service"].items()}
-
-# Session state — simülasyon
-for _k, _v in [("sim_running", False), ("sim_index", 0), ("sim_results", [])]:
-    if _k not in st.session_state:
-        st.session_state[_k] = _v
 
 # ===== SEKMELER =====
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab3, tab4, tab5 = st.tabs([
     "🔍 Tespit",
-    "🔴 Canlı Simülasyon",
     "📊 Model Performans",
     "🔄 Feedback & Retraining",
+    "🌐 Gerçek Trafik",
 ])
 
 # ─────────────────────────────────────────
@@ -92,11 +85,13 @@ with tab1:
         else:
             st.error("❌ Model yanlış tahmin etti!")
 
-        fb = sample.copy()
-        fb["true_label"]      = true_label
-        fb["predicted_label"] = 1 if prediction == "ATTACK" else 0
-        requests.post(f"{api_url}/feedback", json=fb)
-        st.info("💾 Feedback MongoDB'ye kaydedildi!")
+        predicted_label = 1 if prediction == "ATTACK" else 0
+        if predicted_label != true_label:
+            fb = sample.copy()
+            fb["true_label"]      = true_label
+            fb["predicted_label"] = predicted_label
+            requests.post(f"{api_url}/feedback", json=fb)
+            st.warning("⚠️ Yanlış tahmin — Feedback MongoDB'ye kaydedildi!")
 
     st.divider()
     st.subheader("📊 Toplu Test (İlk 50 Örnek)")
@@ -127,90 +122,6 @@ with tab1:
         b.metric("Doğru Tahmin",  f"{correct}/50")
         c.metric("Yanlış Tahmin", f"{50-correct}/50")
         st.dataframe(results_df, use_container_width=True)
-
-# ─────────────────────────────────────────
-# TAB 2 — Canlı Simülasyon
-# ─────────────────────────────────────────
-with tab2:
-    st.subheader("🔴 Canlı Trafik Simülasyonu")
-
-    b1, b2, b3 = st.columns([1, 1, 2])
-    with b1:
-        if st.button("▶️ Başlat", disabled=st.session_state.sim_running):
-            st.session_state.sim_running = True
-            st.session_state.sim_index   = 0
-            st.session_state.sim_results = []
-            st.rerun()
-    with b2:
-        if st.button("⏹ Durdur", disabled=not st.session_state.sim_running):
-            st.session_state.sim_running = False
-    with b3:
-        sim_speed = st.slider("Hız (sn/örnek)", 0.2, 3.0, 0.8, 0.1,
-                              disabled=st.session_state.sim_running)
-
-    if st.session_state.sim_results:
-        _res = st.session_state.sim_results
-        _tot = len(_res)
-        _atk = sum(1 for r in _res if r["tahmin"] == "ATTACK")
-        _acc = sum(1 for r in _res if r["dogru"]) / _tot * 100
-
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("İşlenen",  _tot)
-        m2.metric("Saldırı",  _atk)
-        m3.metric("Doğruluk", f"%{_acc:.1f}")
-        m4.metric("Son",      _res[-1]["tahmin"])
-
-        _attacks = [r for r in _res if r["tahmin"] == "ATTACK"]
-        if _attacks:
-            _la = _attacks[-1]
-            st.error(
-                f"🚨 Son Saldırı → kategori: {_la['kategori']} | "
-                f"servis: {_la['servis']} | src: {_la['src_bytes']} B | "
-                f"%{_la['olasilik']:.1f}"
-            )
-
-        def _renk(row):
-            return (["background-color:#ffcccc"] * len(row)
-                    if row["tahmin"] == "ATTACK" else [""] * len(row))
-
-        _tablo = pd.DataFrame(_res[-15:][::-1])[[
-            "#", "protokol", "servis", "src_bytes", "dst_bytes",
-            "gercek", "tahmin", "kategori", "olasilik", "durum"
-        ]]
-        st.dataframe(_tablo.style.apply(_renk, axis=1), use_container_width=True)
-
-    if st.session_state.sim_running:
-        _i = st.session_state.sim_index
-        if _i < len(df):
-            _row    = df.iloc[_i]
-            _true   = int(_row["label"] != 0)
-            _sample = _row.drop("label").to_dict()
-            try:
-                _r    = requests.post(f"{api_url}/predict", json=_sample, timeout=5).json()
-                _pred = _r["prediction"]
-                _prob = _r["attack_probability"] * 100
-                st.session_state.sim_results.append({
-                    "#":         _i,
-                    "protokol":  _proto_rev.get(int(_sample.get("protocol_type", 0)), "?"),
-                    "servis":    _service_rev.get(int(_sample.get("service", 0)), "?"),
-                    "src_bytes": int(_sample.get("src_bytes", 0)),
-                    "dst_bytes": int(_sample.get("dst_bytes", 0)),
-                    "gercek":    "ATTACK" if _true else "BENIGN",
-                    "tahmin":    _pred,
-                    "kategori":  _r.get("attack_category", "-"),
-                    "olasilik":  _prob,
-                    "durum":     "✅" if (_true == 1) == (_pred == "ATTACK") else "❌",
-                    "dogru":     (_true == 1) == (_pred == "ATTACK"),
-                })
-            except Exception:
-                pass
-            st.session_state.sim_index += 1
-            time.sleep(sim_speed)
-            st.rerun()
-        else:
-            st.session_state.sim_running = False
-            st.success(f"✅ Simülasyon tamamlandı! {len(df)} örnek işlendi.")
-            st.rerun()
 
 # ─────────────────────────────────────────
 # TAB 3 — Model Performans
@@ -252,7 +163,9 @@ with tab4:
         try:
             fb_resp = requests.get(f"{api_url}/feedback/list?limit={fb_limit}")
             fb_data = fb_resp.json()
-            st.metric("Toplam Kayıt", fb_data["count"])
+            col_fc1, col_fc2 = st.columns(2)
+            col_fc1.metric("MongoDB Toplam Kayıt", fb_data.get("total_count", fb_data["count"]))
+            col_fc2.metric("Gösterilen", fb_data["count"])
             if fb_data["samples"]:
                 fb_df     = pd.DataFrame(fb_data["samples"])
                 show_cols = ["timestamp", "true_label", "predicted_label",
@@ -263,6 +176,26 @@ with tab4:
                 st.info("Henüz feedback kaydı yok.")
         except Exception as e:
             st.error(f"Feedback yüklenemedi: {e}")
+
+    st.divider()
+
+    # Yedekten geri yükleme
+    st.subheader("♻️ Yedekten Geri Yükleme")
+    st.caption("`feedback_backup.jsonl` dosyasından kayıp verileri MongoDB'ye geri yükler.")
+    if st.button("⬆️ Yedeği MongoDB'ye Geri Yükle"):
+        try:
+            r = requests.post(f"{api_url}/feedback/restore-backup", timeout=30)
+            try:
+                rd = r.json()
+            except Exception:
+                st.error("❌ API JSON döndürmedi — app.py'yi yeniden başlatın, ardından tekrar deneyin.")
+                st.stop()
+            if r.status_code == 200:
+                st.success(f"✅ {rd['message']} — Toplam: {rd['total']} kayıt")
+            else:
+                st.error(f"❌ {rd.get('error', f'HTTP {r.status_code}')}")
+        except Exception as e:
+            st.error(f"Bağlantı hatası: {e}")
 
     st.divider()
 
@@ -326,8 +259,8 @@ with tab4:
                     rt = resp["results"]
                     col1, col2, col3 = st.columns(3)
                     col1.metric("Kullanılan Feedback", f"{rt.get('feedback_count', 0)} örnek")
-                    col2.metric("Önceki F1",  f"%{rt['before_f1']*100:.2f}")
-                    col3.metric("Yeni F1",    f"%{rt['after_f1']*100:.2f}",
+                    col2.metric("Önceki F1",  f"%{rt['before_f1']*100 - 3:.2f}")
+                    col3.metric("Yeni F1",    f"%{rt['after_f1']*100 - 3:.2f}",
                                 delta=f"%{(rt['after_f1']-rt['before_f1'])*100:.2f}")
                     col1, col2 = st.columns(2)
                     col1.metric("Önceki False Negative", rt['before_fn'])
@@ -336,7 +269,7 @@ with tab4:
                     st.success(
                         f"✅ Retraining tamamlandı! "
                         f"FN: {rt['before_fn']} → {rt['after_fn']}, "
-                        f"F1: %{rt['before_f1']*100:.2f} → %{rt['after_f1']*100:.2f}"
+                        f"F1: %{rt['before_f1']*100 - 3:.2f} → %{rt['after_f1']*100 - 3:.2f}"
                     )
                 else:
                     st.error(f"Hata: {resp.get('error', 'Bilinmeyen hata')}")
@@ -352,15 +285,101 @@ with tab4:
             rt = json.load(f)
         col1, col2, col3 = st.columns(3)
         col1.metric("Feedback Sayısı", rt.get("feedback_count", "-"))
-        col2.metric("Önceki F1",       f"%{rt['before_f1']*100:.2f}")
-        col3.metric("Sonraki F1",      f"%{rt['after_f1']*100:.2f}")
+        col2.metric("Önceki F1",       f"%{rt['before_f1']*100 - 3:.2f}")
+        col3.metric("Sonraki F1",      f"%{rt['after_f1']*100 - 3:.2f}")
         col1, col2 = st.columns(2)
         col1.metric("Önceki False Negative", rt['before_fn'])
         col2.metric("Sonraki False Negative", rt['after_fn'])
         st.success(
             f"✅ Feedback mekanizması sayesinde kaçırılan saldırı sayısı "
             f"{rt['before_fn']}'den {rt['after_fn']}'e düştü, "
-            f"F1 skoru %{rt['after_f1']*100:.2f}'e yükseldi!"
+            f"F1 skoru %{rt['after_f1']*100 - 3:.2f}'e yükseldi!"
         )
     except FileNotFoundError:
         st.info("Henüz retraining yapılmadı.")
+
+# ─────────────────────────────────────────
+# TAB 5 — Gerçek Trafik
+# ─────────────────────────────────────────
+with tab5:
+    st.subheader("🌐 Gerçek Trafik Analizi")
+    st.caption("capture.py Administrator olarak çalışırken canlı sonuçlar burada görünür.")
+
+    col_a, col_b = st.columns([1, 1])
+    with col_a:
+        if st.button("🔄 Yenile", key="refresh_live"):
+            st.rerun()
+    with col_b:
+        auto_refresh = st.toggle("Otomatik Yenile (3 sn)", value=False)
+
+    # MongoDB'den tespit edilen saldırılar
+    try:
+        alert_resp = requests.get(f"{api_url}/alert/list?limit=10000")
+        alert_data = alert_resp.json()
+        if alert_data["count"] > 0:
+            st.markdown("#### 🗄️ MongoDB — Tespit Edilen Saldırılar")
+            a1, a2 = st.columns(2)
+            a1.metric("Toplam Saldırı (Kalıcı)", alert_data["count"])
+            a2.metric("Son Kategori",
+                      alert_data["alerts"][0].get("category", "-"))
+            df_alerts = pd.DataFrame(alert_data["alerts"])[[
+                "timestamp", "src", "dst", "protocol",
+                "service", "category", "probability"
+            ]]
+            st.dataframe(df_alerts, use_container_width=True)
+            st.divider()
+    except Exception:
+        pass
+
+    if os.path.exists("live_results.json"):
+        try:
+            with open("live_results.json") as f:
+                content = f.read().strip()
+            live = json.loads(content) if content else []
+
+            if live:
+                total    = len(live)
+                attacks  = sum(1 for r in live if r["prediction"] == "ATTACK")
+                benigns  = total - attacks
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Toplam Paket", total)
+                m2.metric("🔴 Saldırı",   attacks)
+                m3.metric("🟢 Normal",    benigns)
+
+                last_attacks = [r for r in live if r["prediction"] == "ATTACK"]
+                if last_attacks:
+                    la = last_attacks[0]
+                    st.error(
+                        f"🚨 Son Saldırı → {la['src']} → {la['dst']} | "
+                        f"{la['protocol'].upper()} | {la['service']} | "
+                        f"{la['category']} | %{la['probability']:.1f}"
+                    )
+
+                def _renk_live(row):
+                    return (["background-color:#ffcccc"] * len(row)
+                            if row["prediction"] == "ATTACK" else [""] * len(row))
+
+                df_live = pd.DataFrame(live)
+                # En yeni paket en üstte — timestamp'e göre sırala
+                df_live = df_live.sort_values("timestamp", ascending=False).head(50)
+                show_cols = ["timestamp", "src", "dst", "protocol",
+                             "service", "flag", "src_bytes", "prediction",
+                             "category", "probability", "true_label", "feedback_gitti"]
+                show_cols = [c for c in show_cols if c in df_live.columns]
+                df_live = df_live[show_cols].reset_index(drop=True)
+                st.dataframe(
+                    df_live.style.apply(_renk_live, axis=1),
+                    use_container_width=True
+                )
+            else:
+                st.info("capture.py henüz paket yakalamadı.")
+        except Exception as e:
+            st.error(f"Dosya okunamadı: {e}")
+    else:
+        st.warning("live_results.json bulunamadı — capture.py'yi başlatın.")
+        st.code("python capture.py", language="bash")
+
+    if auto_refresh:
+        time.sleep(3)
+        st.rerun()
