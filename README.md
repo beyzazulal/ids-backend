@@ -111,6 +111,9 @@ python attack_sim.py
 | UDP Flood | UDP portu taşırma |
 | Port Scan | Açık port keşfi |
 
+<img width="995" height="857" alt="image" src="https://github.com/user-attachments/assets/17a545e9-9d09-4b06-b73d-023b3e8682e5" />
+
+
 ## Feedback & Retraining Döngüsü
 
 ```
@@ -135,3 +138,11 @@ Yeni model F1 skoru karşılaştırılır ve kaydedilir
 | `IDS_SMTP_PASSWORD` | — | E-posta şifresi |
 | `IDS_SMTP_TO` | — | Alarm gönderilecek adres |
 | `IDS_ALERT_THRESHOLD` | `0.9` | Alarm eşiği (%90) |
+
+<img width="995" height="857" alt="image" src="https://github.com/user-attachments/assets/01cee6cf-c1dd-4bc2-a416-97d0478b0c51" />
+
+<img width="1910" height="2316" alt="screencapture-localhost-8501-2026-05-20-21_10_37" src="https://github.com/user-attachments/assets/54f0f40e-e974-4792-87fd-5614e9277677" />
+
+<img width="995" height="857" alt="image" src="https://github.com/user-attachments/assets/3b3fe161-89aa-4d5b-949d-0c80caf42ac2" />
+
+
